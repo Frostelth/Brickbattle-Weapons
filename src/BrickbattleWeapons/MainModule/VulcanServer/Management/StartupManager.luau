@@ -5,7 +5,7 @@ local StarterGui = game:GetService("StarterGui")
 local Players = game:GetService("Players")
 local PhysicsService = game:GetService("PhysicsService")
 
-local StateCache = require(script.Parent.Parent.State.StateCache)
+local StateRepository = require(script.Parent.Parent.State.StateRepository)
 local Config = require(script.Parent.Config)
 local ConfigSchema = require(script.Parent.ConfigSchema)
 
@@ -13,18 +13,24 @@ local StateReplicator = require(script.Parent.Parent.Network.Replicator)
 
 local StartupManager = {}
 
-function StartupManager.start(requestedConfiguration: ConfigSchema.ConfigWithOptionals, mainModule: ModuleScript)
-	print("Thank you for using Vulcan  Weapons. Setting up...")
 
+function StartupManager.start(requestedConfiguration: ConfigSchema.ConfigWithOptionals)
+	print("Thank you for using Vulcan  Weapons. Setting up...")
+	local mainModule = script.Parent.Parent.Parent
+	local VulcanShared = createSharedFolder()
+	local remoteFunctionsFolder = createRemoteFunctions()
+	remoteFunctionsFolder.Parent = VulcanShared
+
+	-- We now deliberately initialize all server modules before distributing objects.
 	Config.processRequestedConfiguration(requestedConfiguration)
-	distributeObjects(mainModule)
-	Config.serveClientConfig(ReplicatedStorage.VulcanShared.Remotes.AcquireConfig)
+	Config.serveClientConfig(ReplicatedStorage:WaitForChild("VulcanShared").Remotes.AcquireConfig)
 	connectPlayerEvents()
-	StateCache.serveGlobalState(ReplicatedStorage.VulcanShared.Remotes.AcquireState)
-	StateReplicator.setCallacks()
+	StateRepository.serveGlobalState(ReplicatedStorage:WaitForChild("VulcanShared").Remotes.AcquireState)
+	StateReplicator.setCallbacks()
+	distributeObjects(mainModule)
 	createPhysicsGroups()
 
-	print("Vulcan  Weapons setup completed.")
+	print("Vulcan Weapons setup completed.")
 end
 
 function connectPlayerEvents()
@@ -41,10 +47,11 @@ function connectPlayerEvents()
 
 	local function playerJoined(player: Player)
 		createPlayerProjectileFolders(player)
-		StateCache.createPlayerState(player)
+		StateRepository.createPlayerState(player)
 	end
 
 	local function playerLeft(player: Player)
+		StateRepository.deletePlayerState(player)
 		local bufferFolder = workspace.Projectiles.Buffers[player.Name]
 		if bufferFolder then
 			bufferFolder:Destroy()
@@ -62,7 +69,14 @@ function connectPlayerEvents()
 	Players.PlayerRemoving:Connect(playerLeft)
 end
 
-local function createRemoteFunctions(): Folder
+function createSharedFolder(): Folder
+	local VulcanShared = Instance.new("Folder")
+	VulcanShared.Name = "VulcanShared"
+	VulcanShared.Parent = ReplicatedStorage
+	return VulcanShared
+end
+
+function createRemoteFunctions(): Folder
 	local remoteFunctions: {string} = {
 		"AcquireConfig",
 		"AcquireState"
@@ -99,17 +113,21 @@ local function createProjectileFolders(): Folder
 	return projectiles
 end
 
+local function checkAndParent(obj: string, oldDirectory: Instance, newDirectory: Instance)
+	local foundObj = oldDirectory:FindFirstChild(obj)
+	if foundObj then
+		foundObj.Parent = newDirectory
+	else
+		error("Could not find object" .. obj, 1)
+	end
+end
+
 function distributeObjects(mainModule: ModuleScript)
-
-	local remoteFunctionsFolder: Folder = createRemoteFunctions()
 	local projectilesFolder: Folder = createProjectileFolders()
-
-	mainModule.VulcanDependencyChecker.Parent = StarterGui
-	mainModule.VulcanClient.Parent = game:GetService("StarterPlayer").StarterPlayerScripts
-	mainModule.VulcanShared.Parent = ReplicatedStorage
-	mainModule.VulcanServer.Parent = ServerScriptService
+	checkAndParent("VulcanDependencyChecker", mainModule, StarterGui)
+	checkAndParent("VulcanClient", mainModule, game:GetService("StarterPlayer").StarterPlayerScripts)
+	checkAndParent("VulcanServer", mainModule, ServerScriptService)
 	mainModule.Parent = ServerScriptService.VulcanServer
-	remoteFunctionsFolder.Parent = ReplicatedStorage.VulcanShared
 	projectilesFolder.Parent = workspace
 
 	-- Distribute checker script to ensure players have mandatory client scripts,
